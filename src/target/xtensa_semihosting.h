@@ -1,7 +1,8 @@
 /***************************************************************************
- *   ESP32-S2 target for OpenOCD                                           *
- *   Copyright (C) 2019 Espressif Systems Ltd.                             *
+ *   Generic Xtensa Semihosting API                                        *
+ *   Copyright (C) 2020 Espressif Systems Ltd.                             *
  *   Author: Alexey Gerenkov <alexey@espressif.com>                        *
+ *   Author: Andrei Gramakov <andrei.gramakov@espressif.com>               *
  *                                                                         *
  *   This program is free software; you can redistribute it and/or modify  *
  *   it under the terms of the GNU General Public License as published by  *
@@ -19,35 +20,19 @@
  *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.           *
  ***************************************************************************/
 
-#ifndef XTENSA_ESP32_S2_H
-#define XTENSA_ESP32_S2_H
+#ifndef OPENOCD_XTENSA_SEMIHOSTING_COMMON_H
+#define OPENOCD_XTENSA_SEMIHOSTING_COMMON_H
 
-#include "esp_xtensa.h"
+#include "target.h"
+#include "command.h"
+#include "xtensa.h"
+#include "semihosting_common.h"
 
-#define ESP32_S2_DROM_LOW    0x3F000000
-#define ESP32_S2_DROM_HIGH   0x3F400000
-#define ESP32_S2_IROM_LOW    0x40080000
-#define ESP32_S2_IROM_HIGH   0x40c00000
 
-/*Number of registers returned directly by the G command
- *Corresponds to the amount of regs listed in regformats/reg-xtensa.dat in the gdb source */
-#define ESP32_S2_NUM_REGS_G_COMMAND   72
+#define XTENSA_SYSCALL_OP_REG      XT_REG_IDX_A2
+#define XTENSA_SYSCALL_RETVAL_REG  XT_REG_IDX_A2
+#define XTENSA_SYSCALL_ERRNO_REG   XT_REG_IDX_A3
 
-enum esp32_s2_rev {
-	ESP32_S2_REV_UNKNOWN = -1,
-	ESP32_S2_REV_BETA,
-	ESP32_S2_REV_0,
-	ESP32_S2_REV_LATEST = ESP32_S2_REV_0
-};
+int xtensa_semihosting_init(struct target *target);
 
-struct esp32_s2_common {
-	struct esp_xtensa_common esp_xtensa;
-	enum esp32_s2_rev chip_rev;
-};
-
-static inline struct esp32_s2_common *target_to_esp32_s2(struct target *target)
-{
-	return container_of(target->arch_info, struct esp32_s2_common, esp_xtensa);
-}
-
-#endif	/* XTENSA_ESP32_S2_H */
+#endif	/*OPENOCD_XTENSA_SEMIHOSTING_COMMON_H*/

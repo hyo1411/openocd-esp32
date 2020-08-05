@@ -28,25 +28,40 @@
 #include "assert.h"
 #include "rtos/rtos.h"
 #include "flash/nor/esp_xtensa.h"
-#include "esp32_s2.h"
+#include "esp32s2.h"
 #include "esp32_apptrace.h"
 #include "esp_xtensa.h"
 
 /* Overall memory map
  * TODO: read memory configuration from target registers */
-#define ESP32_S2_IRAM_LOW       0x40020000
-#define ESP32_S2_IRAM_HIGH      0x40070000
-#define ESP32_S2_RTC_IRAM_LOW   0x40070000
-#define ESP32_S2_RTC_IRAM_HIGH  0x40072000
-#define ESP32_S2_RTC_DRAM_LOW   0x3ff9e000
-#define ESP32_S2_RTC_DRAM_HIGH  0x3ffa0000
-#define ESP32_S2_DRAM_LOW       0x3FFB0000
-#define ESP32_S2_DRAM_HIGH      0x3FFFFFFF
-#define ESP32_S2_RTC_DATA_LOW   0x50000000
-#define ESP32_S2_RTC_DATA_HIGH  0x50002000
+#define ESP32_S2_IROM_MASK_LOW          0x40000000
+#define ESP32_S2_IROM_MASK_HIGH         0x4001a100
+#define ESP32_S2_IRAM_LOW               0x40020000
+#define ESP32_S2_IRAM_HIGH              0x40070000
+#define ESP32_S2_DRAM_LOW               0x3ffb0000
+#define ESP32_S2_DRAM_HIGH              0x40000000
+#define ESP32_S2_RTC_IRAM_LOW           0x40070000
+#define ESP32_S2_RTC_IRAM_HIGH          0x40072000
+#define ESP32_S2_RTC_DRAM_LOW           0x3ff9e000
+#define ESP32_S2_RTC_DRAM_HIGH          0x3ffa0000
+#define ESP32_S2_RTC_DATA_LOW           0x50000000
+#define ESP32_S2_RTC_DATA_HIGH          0x50002000
+#define ESP32_S2_EXTRAM_DATA_LOW        0x3f500000
+#define ESP32_S2_EXTRAM_DATA_HIGH       0x3ff80000
+#define ESP32_S2_DR_REG_LOW             0x3f400000
+#define ESP32_S2_DR_REG_HIGH            0x3f4d3FFC
+#define ESP32_S2_SYS_RAM_LOW            0x60000000UL
+#define ESP32_S2_SYS_RAM_HIGH           (ESP32_S2_SYS_RAM_LOW+0x20000000UL)
+/* ESP32-S2 DROM mapping is not contiguous. */
+/* IDF declares this as 0x3F000000..0x3FF80000, but there are peripheral registers mapped to
+ * 0x3f400000..0x3f4d3FFC. */
+#define ESP32_S2_DROM0_LOW                      ESP32_S2_DROM_LOW
+#define ESP32_S2_DROM0_HIGH                     ESP32_S2_DR_REG_LOW
+#define ESP32_S2_DROM1_LOW                      ESP32_S2_DR_REG_HIGH
+#define ESP32_S2_DROM1_HIGH                     ESP32_S2_DROM_HIGH
 
 /* ESP32 WDT */
-#define ESP32_S2_WDT_WKEY_VALUE       0x50D83AA1
+#define ESP32_S2_WDT_WKEY_VALUE       0x50d83aa1
 #define ESP32_S2_TIMG0_BASE           0x3f41F000
 #define ESP32_S2_TIMG1_BASE           0x3f420000
 #define ESP32_S2_TIMGWDT_CFG0_OFF     0x48
@@ -64,14 +79,13 @@
 #define ESP32_S2_TRACEMEM_BLOCK_SZ      0x4000
 
 #define ESP32_S2_DR_REG_UART_BASE       0x3f400000
-#define ESP32_S2_REG_UART_BASE(i)             (ESP32_S2_DR_REG_UART_BASE + (i) * 0x10000 )
+#define ESP32_S2_REG_UART_BASE(i)       (ESP32_S2_DR_REG_UART_BASE + (i) * 0x10000 )
 #define ESP32_S2_UART_DATE_REG(i)       (ESP32_S2_REG_UART_BASE(i) + 0x74)
-#define ESP32_S2_CHIP_REV_REG                   ESP32_S2_UART_DATE_REG(0)
-#define ESP32_S2_CHIP_REV_VAL                   0x19031400
-#define ESP32_S2BETA_CHIP_REV_VAL               0x18082800
+#define ESP32_S2_CHIP_REV_REG           ESP32_S2_UART_DATE_REG(0)
+#define ESP32_S2_CHIP_REV_VAL           0x19031400
+#define ESP32_S2BETA_CHIP_REV_VAL       0x18082800
 
-
-static const struct xtensa_config esp32_s2_xtensa_cfg = {
+static const struct xtensa_config esp32s2_xtensa_cfg = {
 	.density        = true,
 	.aregs_num      = XT_AREGS_NUM_MAX,
 	.windowed       = true,
@@ -80,11 +94,16 @@ static const struct xtensa_config esp32_s2_xtensa_cfg = {
 	.threadptr      = true,
 	.gdb_regs_num   = ESP32_S2_NUM_REGS_G_COMMAND,
 	.irom           = {
-		.count = 1,
+		.count = 2,
 		.regions = {
 			{
 				.base = ESP32_S2_IROM_LOW,
 				.size = ESP32_S2_IROM_HIGH-ESP32_S2_IROM_LOW,
+				.access = XT_MEM_ACCESS_READ,
+			},
+			{
+				.base = ESP32_S2_IROM_MASK_LOW,
+				.size = ESP32_S2_IROM_MASK_HIGH-ESP32_S2_IROM_MASK_LOW,
 				.access = XT_MEM_ACCESS_READ,
 			},
 		}
@@ -105,17 +124,22 @@ static const struct xtensa_config esp32_s2_xtensa_cfg = {
 		}
 	},
 	.drom           = {
-		.count = 1,
+		.count = 2,
 		.regions = {
 			{
-				.base = ESP32_S2_DROM_LOW,
-				.size = ESP32_S2_DROM_HIGH-ESP32_S2_DROM_LOW,
+				.base = ESP32_S2_DROM0_LOW,
+				.size = ESP32_S2_DROM0_HIGH-ESP32_S2_DROM0_LOW,
+				.access = XT_MEM_ACCESS_READ,
+			},
+			{
+				.base = ESP32_S2_DROM1_LOW,
+				.size = ESP32_S2_DROM1_HIGH-ESP32_S2_DROM1_LOW,
 				.access = XT_MEM_ACCESS_READ,
 			},
 		}
 	},
 	.dram           = {
-		.count = 3,
+		.count = 6,
 		.regions = {
 			{
 				.base = ESP32_S2_DRAM_LOW,
@@ -130,6 +154,21 @@ static const struct xtensa_config esp32_s2_xtensa_cfg = {
 			{
 				.base = ESP32_S2_RTC_DATA_LOW,
 				.size = ESP32_S2_RTC_DATA_HIGH-ESP32_S2_RTC_DATA_LOW,
+				.access = XT_MEM_ACCESS_READ|XT_MEM_ACCESS_WRITE,
+			},
+			{
+				.base = ESP32_S2_EXTRAM_DATA_LOW,
+				.size = ESP32_S2_EXTRAM_DATA_HIGH-ESP32_S2_EXTRAM_DATA_LOW,
+				.access = XT_MEM_ACCESS_READ|XT_MEM_ACCESS_WRITE,
+			},
+			{
+				.base = ESP32_S2_DR_REG_LOW,
+				.size = ESP32_S2_DR_REG_HIGH-ESP32_S2_DR_REG_LOW,
+				.access = XT_MEM_ACCESS_READ|XT_MEM_ACCESS_WRITE,
+			},
+			{
+				.base = ESP32_S2_SYS_RAM_LOW,
+				.size = ESP32_S2_SYS_RAM_HIGH-ESP32_S2_SYS_RAM_LOW,
 				.access = XT_MEM_ACCESS_READ|XT_MEM_ACCESS_WRITE,
 			},
 		}
@@ -163,14 +202,14 @@ static const struct xtensa_config esp32_s2_xtensa_cfg = {
 	},
 };
 
-static int esp32_s2_soc_reset(struct target *target);
+static int esp32s2_soc_reset(struct target *target);
 
-static int esp32_s2_assert_reset(struct target *target)
+static int esp32s2_assert_reset(struct target *target)
 {
 	LOG_DEBUG("%s: begin", target_name(target));
 
 	/* Reset the SoC first */
-	int res = esp32_s2_soc_reset(target);
+	int res = esp32s2_soc_reset(target);
 	if (res != ERROR_OK)
 		return res;
 	return xtensa_assert_reset(target);
@@ -188,7 +227,7 @@ How this works:
 6. restore initial PC and the contents of ESP32_S2_RTC_DATA_LOW
 TODO: some state of RTC_CNTL is not reset during SW_SYS_RST. Need to reset that manually.
 */
-static int esp32_s2_soc_reset(struct target *target)
+static int esp32s2_soc_reset(struct target *target)
 {
 	int res;
 
@@ -337,7 +376,7 @@ static int esp32_s2_soc_reset(struct target *target)
 	return ERROR_OK;
 }
 
-static int esp32_s2_disable_wdts(struct target *target)
+static int esp32s2_disable_wdts(struct target *target)
 {
 	/* TIMG1 WDT */
 	int res = target_write_u32(target, ESP32_S2_TIMG0WDT_PROTECT, ESP32_S2_WDT_WKEY_VALUE);
@@ -375,19 +414,19 @@ static int esp32_s2_disable_wdts(struct target *target)
 	return ERROR_OK;
 }
 
-static int esp32_s2_arch_state(struct target *target)
+static int esp32s2_arch_state(struct target *target)
 {
 	return ERROR_OK;
 }
 
-static bool esp32_s2_on_halt(struct target *target)
+static int esp32s2_on_halt(struct target *target)
 {
-	struct esp32_s2_common *esp32 = target_to_esp32_s2(target);
+	struct esp32s2_common *esp32 = target_to_esp32s2(target);
 	uint32_t val = (uint32_t)-1;
 
-	int ret = esp32_s2_disable_wdts(target);
+	int ret = esp32s2_disable_wdts(target);
 	if (ret != ERROR_OK)
-		return false;
+		return ret;
 
 	if (esp32->chip_rev == ESP32_S2_REV_UNKNOWN) {
 		ret = xtensa_read_buffer(target,
@@ -406,58 +445,120 @@ static bool esp32_s2_on_halt(struct target *target)
 		} else
 			LOG_WARNING("Unknown ESP32-S2 chip revision (0x%x)!", val);
 	}
-
-	return esp_xtensa_on_halt(target);
+	return ERROR_OK;
 }
 
-static int esp32_s2_target_init(struct command_context *cmd_ctx, struct target *target)
+static int esp32s2_poll(struct target *target)
+{
+	enum target_state old_state = target->state;
+	int ret;
+
+	ret = esp_xtensa_poll(target);
+
+	if (old_state != TARGET_HALTED && target->state == TARGET_HALTED) {
+		/*Call any event callbacks that are applicable */
+		if (old_state == TARGET_DEBUG_RUNNING)
+			target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
+		else {
+			if (esp_xtensa_semihosting(target, &ret) != 0) {
+				struct esp_xtensa_common *esp_xtensa = target_to_esp_xtensa(target);
+				if (ret == ERROR_OK && esp_xtensa->semihost.need_resume) {
+					esp_xtensa->semihost.need_resume = false;
+					/* Resume xtensa_resume will handle BREAK instruction. */
+					ret = target_resume(target, 1, 0, 1, 0);
+					if (ret != ERROR_OK) {
+						LOG_ERROR("Failed to resume target");
+						return ret;
+					}
+				}
+				return ret;
+			}
+			target_call_event_callbacks(target, TARGET_EVENT_HALTED);
+		}
+	}
+
+	return ret;
+}
+
+static int esp32s2_virt2phys(struct target *target,
+	target_addr_t virtual, target_addr_t *physical)
+{
+	*physical = virtual;
+	return ERROR_OK;
+}
+
+static int esp32s2_handle_target_event(struct target *target, enum target_event event, void *priv)
+{
+	if (target != priv)
+		return ERROR_OK;
+
+	LOG_DEBUG("%d", event);
+
+	int ret = esp_xtensa_handle_target_event(target, event, priv);
+	if (ret != ERROR_OK)
+		return ret;
+
+	switch (event) {
+		case TARGET_EVENT_HALTED:
+			esp32s2_on_halt(target);
+			break;
+		default:
+			break;
+	}
+	return ERROR_OK;
+}
+
+static int esp32s2_target_init(struct command_context *cmd_ctx, struct target *target)
 {
 	int ret = esp_xtensa_target_init(cmd_ctx, target);
 	if (ret != ERROR_OK)
 		return ret;
+
+	ret = target_register_event_callback(esp32s2_handle_target_event, target);
+	if (ret != ERROR_OK)
+		return ret;
+
+	ret = esp_xtensa_semihosting_init(target);
+	if (ret != ERROR_OK)
+		return ret;
+
 	return ERROR_OK;
 }
 
-static const struct xtensa_debug_ops esp32_s2_dbg_ops = {
+static const struct xtensa_debug_ops esp32s2_dbg_ops = {
 	.queue_enable = xtensa_dm_queue_enable,
 	.queue_reg_read = xtensa_dm_queue_reg_read,
 	.queue_reg_write = xtensa_dm_queue_reg_write
 };
 
-static const struct xtensa_power_ops esp32_s2_pwr_ops = {
+static const struct xtensa_power_ops esp32s2_pwr_ops = {
 	.queue_reg_read = xtensa_dm_queue_pwr_reg_read,
 	.queue_reg_write = xtensa_dm_queue_pwr_reg_write
 };
 
-static const struct esp_xtensa_special_breakpoint_ops esp32_s2_spec_brp_ops = {
+static const struct esp_xtensa_flash_breakpoint_ops esp32s2_spec_brp_ops = {
 	.breakpoint_add = esp_xtensa_flash_breakpoint_add,
 	.breakpoint_remove = esp_xtensa_flash_breakpoint_remove
 };
 
-static const struct xtensa_chip_ops esp32_s2_chip_ops = {
-	.on_reset = esp_xtensa_on_reset,
-	.on_poll = esp_xtensa_on_poll,
-	.on_halt = esp32_s2_on_halt,
-};
-
-static int esp32_s2_target_create(struct target *target, Jim_Interp *interp)
+static int esp32s2_target_create(struct target *target, Jim_Interp *interp)
 {
-	struct xtensa_debug_module_config esp32_s2_dm_cfg = {
-		.dbg_ops = &esp32_s2_dbg_ops,
-		.pwr_ops = &esp32_s2_pwr_ops,
+	struct xtensa_debug_module_config esp32s2_dm_cfg = {
+		.dbg_ops = &esp32s2_dbg_ops,
+		.pwr_ops = &esp32s2_pwr_ops,
 		.tap = target->tap,
 		.queue_tdi_idle = NULL,
 		.queue_tdi_idle_arg = NULL
 	};
 
-	struct esp32_s2_common *esp32 = calloc(1, sizeof(struct esp32_s2_common));
+	struct esp32s2_common *esp32 = calloc(1, sizeof(struct esp32s2_common));
 	if (esp32 == NULL) {
 		LOG_ERROR("Failed to alloc memory for arch info!");
 		return ERROR_FAIL;
 	}
 
-	int ret = esp_xtensa_init_arch_info(target, target, esp32, &esp32_s2_xtensa_cfg,
-		&esp32_s2_dm_cfg, &esp32_s2_chip_ops, &esp32_s2_spec_brp_ops);
+	int ret = esp_xtensa_init_arch_info(target, &esp32->esp_xtensa, &esp32s2_xtensa_cfg,
+		&esp32s2_dm_cfg, &esp32s2_spec_brp_ops);
 	if (ret != ERROR_OK) {
 		LOG_ERROR("Failed to init arch info!");
 		free(esp32);
@@ -471,45 +572,53 @@ static int esp32_s2_target_create(struct target *target, Jim_Interp *interp)
 	return ERROR_OK;
 }
 
-static const struct command_registration esp32_s2_command_handlers[] = {
+static const struct command_registration esp_any_command_handlers[] = {
 	{
-		.name = "esp32_s2",
 		.mode = COMMAND_ANY,
-		.help = "ESP32-S2 commands group",
 		.usage = "",
-		.chain = xtensa_command_handlers,
+		.chain = esp_command_handlers,
 	},
 	{
-		.name = "esp32_s2",
 		.mode = COMMAND_ANY,
-		.help = "ESP32-S2 command group",
-		.usage = "",
-		.chain = esp_xtensa_command_handlers,
-	},
-	{
-		.name = "esp32_s2",
-		.mode = COMMAND_ANY,
-		.help = "ESP32-S2 apptrace commands group",
 		.usage = "",
 		.chain = esp32_apptrace_command_handlers,
 	},
 	COMMAND_REGISTRATION_DONE
 };
 
-/** Holds methods for Xtensa targets. */
-struct target_type esp32_s2_target = {
-	.name = "esp32_s2",
+static const struct command_registration esp32s2_command_handlers[] = {
+	{
+		.name = "xtensa",
+		.mode = COMMAND_ANY,
+		.help = "Xtensa commands group",
+		.usage = "",
+		.chain = xtensa_command_handlers,
+	},
+	{
+		.name = "esp",
+		.mode = COMMAND_ANY,
+		.help = "ESP command group",
+		.usage = "",
+		.chain = esp_any_command_handlers,
+	},
+	COMMAND_REGISTRATION_DONE
+};
 
-	.poll = xtensa_poll,
-	.arch_state = esp32_s2_arch_state,
+/** Holds methods for Xtensa targets. */
+struct target_type esp32s2_target = {
+	.name = "esp32s2",
+
+	.poll = esp32s2_poll,
+	.arch_state = esp32s2_arch_state,
 
 	.halt = xtensa_halt,
 	.resume = xtensa_resume,
 	.step = xtensa_step,
 
-	.assert_reset = esp32_s2_assert_reset,
+	.assert_reset = esp32s2_assert_reset,
 	.deassert_reset = xtensa_deassert_reset,
 
+	.virt2phys = esp32s2_virt2phys,
 	.mmu = xtensa_mmu_is_enabled,
 	.read_memory = xtensa_read_memory,
 	.write_memory = xtensa_write_memory,
@@ -531,9 +640,10 @@ struct target_type esp32_s2_target = {
 	.add_watchpoint = xtensa_watchpoint_add,
 	.remove_watchpoint = xtensa_watchpoint_remove,
 
-	.target_create = esp32_s2_target_create,
-	.init_target = esp32_s2_target_init,
+	.target_create = esp32s2_target_create,
+	.init_target = esp32s2_target_init,
 	.examine = xtensa_examine,
+	.deinit_target = esp_xtensa_target_deinit,
 
-	.commands = esp32_s2_command_handlers,
+	.commands = esp32s2_command_handlers,
 };

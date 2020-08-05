@@ -24,8 +24,8 @@
 #endif
 
 #include "imp.h"
+#include <target/smp.h>
 #include <target/esp_xtensa_apptrace.h>
-#include <target/xtensa_mcore.h>
 #include <target/esp32.h>
 #include "esp_xtensa.h"
 #include "contrib/loaders/flash/esp/esp32/stub_flasher_image.h"
@@ -83,7 +83,7 @@ FLASH_BANK_COMMAND_HANDLER(esp32_flash_bank_command)
 		return ERROR_FAIL;
 	int ret = esp_xtensa_flash_init(&esp32_info->esp_xtensa,
 		ESP32_FLASH_SECTOR_SIZE,
-		xtensa_mcore_run_func_image,
+		esp32_run_func_image,
 		esp32_is_irom_address,
 		esp32_is_drom_address,
 		esp32_get_stub);
@@ -101,20 +101,73 @@ static int esp32_get_info(struct flash_bank *bank, char *buf, int buf_size)
 	return ERROR_OK;
 }
 
+COMMAND_HANDLER(esp32_cmd_appimage_flashoff)
+{
+	struct target *target = get_current_target(CMD_CTX);
+
+	if (target->smp) {
+		struct target_list *head;
+		struct target *curr;
+		foreach_smp_target(head, target->head) {
+			curr = head->target;
+			int ret = CALL_COMMAND_HANDLER(esp_xtensa_cmd_appimage_flashoff_do, curr);
+			if (ret != ERROR_OK)
+				return ret;
+		}
+		return ERROR_OK;
+	}
+	return CALL_COMMAND_HANDLER(esp_xtensa_cmd_appimage_flashoff_do, target);
+}
+
+const struct command_registration esp32_flash_command_handlers[] = {
+	{
+		.name = "appimage_offset",
+		.handler = esp32_cmd_appimage_flashoff,
+		.mode = COMMAND_ANY,
+		.help =
+			"Set offset of application image in flash. Use -1 to debug the first application image from partition table.",
+		.usage = "offset",
+	},
+	COMMAND_REGISTRATION_DONE
+};
+
 static const struct command_registration esp32_command_handlers[] = {
+	{
+		.name = "esp",
+		.mode = COMMAND_ANY,
+		.help = "ESP flash command group",
+		.usage = "",
+		.chain = esp32_flash_command_handlers,
+	},
+	COMMAND_REGISTRATION_DONE
+};
+
+static const struct command_registration esp32_legacy_command_handlers[] = {
 	{
 		.name = "esp32",
 		.mode = COMMAND_ANY,
-		.help = "esp32 flash command group",
+		.help = "ESP32 flash command group",
 		.usage = "",
-		.chain = esp_xtensa_exec_command_handlers,
+		.chain = esp32_flash_command_handlers,
+	},
+	COMMAND_REGISTRATION_DONE
+};
+
+static const struct command_registration esp32_all_command_handlers[] = {
+	{
+		.usage = "",
+		.chain = esp32_command_handlers,
+	},
+	{
+		.usage = "",
+		.chain = esp32_legacy_command_handlers,
 	},
 	COMMAND_REGISTRATION_DONE
 };
 
 struct flash_driver esp32_flash = {
 	.name = "esp32",
-	.commands = esp32_command_handlers,
+	.commands = esp32_all_command_handlers,
 	.flash_bank_command = esp32_flash_bank_command,
 	.erase = esp_xtensa_erase,
 	.protect = esp_xtensa_protect,
@@ -125,4 +178,5 @@ struct flash_driver esp32_flash = {
 	.erase_check = esp_xtensa_blank_check,
 	.protect_check = esp_xtensa_protect_check,
 	.info = esp32_get_info,
+	.free_driver_priv = default_flash_free_driver_priv,
 };
